@@ -1,0 +1,17 @@
+[package]
+name = "glymo"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Fast, deterministic terminal-cell matcher: pixel patches → (codepoint, fg, bg)"
+repository = "https://github.com/breadlam/glymo"
+
+# Match the rest of the broadcast pipeline: prefer GCC-style codegen so
+# inner-loop popcount + SIMD have a chance of competing with hand-tuned C.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
+# Intentionally none. The core matcher is dependency-free by design;
+# downstream crates bring their own image/codec/IO surface.
