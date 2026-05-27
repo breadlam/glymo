@@ -31,9 +31,11 @@
 #![forbid(unsafe_code)]
 
 pub mod bitmap;
+pub mod color;
 pub mod repertoire;
 pub mod symbol;
 
 pub use bitmap::Bitmap;
+pub use color::{analyze, luminance, Analysis, Patch, Rgb};
 pub use repertoire::{Repertoire, SymbolSet};
 pub use symbol::Symbol;
