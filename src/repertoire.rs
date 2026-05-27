@@ -25,18 +25,35 @@ impl Repertoire {
     /// at 4 sub-pixel columns they would need fractional addressing.
     pub const BLOCK: Repertoire = Repertoire(1 << 1);
 
-    /// All 256 Braille patterns (U+2800..U+28FF). Each Braille cell
-    /// holds 8 dots in a 2×4 grid; each dot maps to a 2×2 zone of our
-    /// sub-pixel grid. Decades-old, near-universal font support — the
-    /// safe choice for "rich" pool support before octants are
-    /// universally rendered.
+    /// All 256 Braille patterns (U+2800..U+28FF). Each cell holds 8
+    /// dots in a 2×4 grid. **Note:** this revision's bitmap model for
+    /// braille is wrong — each dot is mapped to a full 2×2 sub-pixel
+    /// zone, but terminals render dots small with whitespace around
+    /// them. Reasonable matching surface is sparse (~1 sub-pixel per
+    /// dot at a fixed position within the zone). Kept in for testing /
+    /// future fix; not in the default RICH pool.
     pub const BRAILLE: Repertoire = Repertoire(1 << 2);
 
-    /// Block-only — narrow universal-support tier.
-    pub const CONSERVATIVE: Repertoire = Repertoire(0b011);
+    /// 230 Unicode 16 octants (U+1CD00..U+1CDE5). Each octant fills
+    /// solid 2×2 sub-pixel zones in a 2×4 grid — matches the matcher's
+    /// bitmap model directly. The 26 patterns NOT encoded here are
+    /// already in [`BLOCK`] (full, halves, quadrants, diagonals, three-
+    /// corner, lower 1/4 and 3/4) or are unencoded by Unicode for
+    /// reasons internal to the standard ({3,5}, {4,6}, {7}, {8},
+    /// {1,2,3,4,5,6}). Together with `BLOCK`, this covers all
+    /// 256 octant patterns minus a small handful of mystery omissions.
+    pub const OCTANT: Repertoire = Repertoire(1 << 3);
 
-    /// Block + Braille — broad font support with a ~270-glyph pool.
-    pub const RICH: Repertoire = Repertoire(0b111);
+    /// Block-only — narrow universal-support tier.
+    pub const CONSERVATIVE: Repertoire = Repertoire(0b0011);
+
+    /// Block + Octant — the default rich pool. ~250 deduped glyphs.
+    /// Requires a terminal that renders Unicode 16 (Sep 2024) octants;
+    /// recent kitty / foot / wezterm / ghostty / iTerm2 work, mobile
+    /// is patchier. Falls back to nearest block-element on un-rendered
+    /// codepoints (the client sees tofu, but for matching purposes
+    /// every patch still resolves).
+    pub const RICH: Repertoire = Repertoire(0b1011);
 
     pub const fn contains(self, other: Repertoire) -> bool {
         (self.0 & other.0) == other.0
@@ -130,6 +147,83 @@ fn braille_dot_zone(dot: u8) -> Bitmap {
     Bitmap::from_rect(r0, c0, r0 + 2, c0 + 2)
 }
 
+/// Octant 2×4 grid → 4×8 sub-pixel zone, Z-order numbering
+/// (1,2 top row; 3,4 second; 5,6 third; 7,8 bottom). Each position
+/// occupies a 2×2 zone of sub-pixels.
+fn octant_zone(position: u8) -> Bitmap {
+    let n = (position - 1) as usize;
+    let zone_col = n & 1;
+    let zone_row = n >> 1;
+    let r0 = zone_row * 2;
+    let c0 = zone_col * 2;
+    Bitmap::from_rect(r0, c0, r0 + 2, c0 + 2)
+}
+
+/// Octant position-bitfields indexed by `(codepoint - U+1CD00)`. Each
+/// byte's bit N-1 = position N filled. Generated from the official
+/// Unicode 16 "BLOCK OCTANT-N" naming convention. 230 entries
+/// covering U+1CD00..U+1CDE5. Patterns not encoded here are either
+/// in BLOCK (halves, quadrants, diagonals, three-corners, lower
+/// 1/4 and 3/4, plus SPACE / FULL) or omitted by Unicode for
+/// internal reasons ({3,5}, {4,6}, {7} alone, {8} alone,
+/// {1,2,3,4,5,6}).
+const OCTANT_PATTERNS: [u8; 230] = [
+    // U+1CD00..U+1CD02 — max position 3 (3 entries)
+    0x04, 0x06, 0x07,
+    // U+1CD03..U+1CD08 — max position 4 (6 entries)
+    0x08, 0x09, 0x0B, 0x0C, 0x0D, 0x0E,
+    // U+1CD09..U+1CD17 — max position 5 (15 entries; {3,5}=0x14 omitted)
+    0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+    // U+1CD18..U+1CD35 — max position 6 (30 entries; {4,6}=0x28 and {1..6}=0x3F omitted)
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E,
+    // U+1CD36..U+1CD70 — max position 7 (59 entries; {7}=0x40 omitted,
+    // plus LL-quad/left-half/UR+LL-diag/3-corner-missing-LR exclusions)
+    0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
+    0x51, 0x52, 0x53, 0x54, 0x56, 0x57,
+    0x58, 0x59, 0x5B, 0x5C, 0x5D, 0x5E,
+    0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+    0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77,
+    0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F,
+    // U+1CD71..U+1CDE5 — max position 8 (117 entries; {8}=0x80 omitted,
+    // plus LR-quad/right-half/UL+LR-diag/3-corner-missing-{LL,UR,UL}/
+    // lower-{1/4,1/2,3/4}/FULL exclusions)
+    0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+    0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F,
+    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F,
+    0xA1, 0xA2, 0xA3, 0xA4, 0xA6, 0xA7,
+    0xA8, 0xA9, 0xAB, 0xAC, 0xAD, 0xAE,
+    0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF,
+    0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+    0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF,
+    0xD0, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+    0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF,
+    0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7,
+    0xE8, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF,
+    0xF1, 0xF2, 0xF3, 0xF4, 0xF6, 0xF7,
+    0xF8, 0xF9, 0xFB, 0xFD, 0xFE,
+];
+
+fn push_octants(v: &mut Vec<Symbol>) {
+    for (offset, &pattern) in OCTANT_PATTERNS.iter().enumerate() {
+        let mut bm = Bitmap::EMPTY;
+        for bit in 0..8u8 {
+            if pattern & (1 << bit) != 0 {
+                bm = bm.union(octant_zone(bit + 1));
+            }
+        }
+        let codepoint = 0x1CD00 + offset as u32;
+        v.push(Symbol::from_u32(codepoint, bm));
+    }
+}
+
 fn push_braille(v: &mut Vec<Symbol>) {
     // All 256 patterns. The dedup pass collapses any whose bitmaps match
     // an earlier (lower-codepoint) entry — e.g. the all-empty Braille
@@ -169,6 +263,9 @@ impl SymbolSet {
         }
         if rep.contains(Repertoire::BLOCK) {
             push_block(&mut all);
+        }
+        if rep.contains(Repertoire::OCTANT) {
+            push_octants(&mut all);
         }
         if rep.contains(Repertoire::BRAILLE) {
             push_braille(&mut all);
@@ -271,8 +368,6 @@ mod tests {
         assert_eq!(left.union(right), Bitmap::FULL);
     }
 
-    // ─── Braille tests ─────────────────────────────────────────────────
-
     #[test]
     fn rich_pool_grows_over_conservative() {
         let conservative = SymbolSet::build(Repertoire::CONSERVATIVE);
@@ -292,9 +387,106 @@ mod tests {
         }
     }
 
+    // ─── Octant tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn octant_zone_geometry() {
+        // Each octant zone covers a 2×2 sub-pixel block, 8 zones tile
+        // the 4×8 cell exactly with no overlap.
+        let mut total = Bitmap::EMPTY;
+        for pos in 1..=8u8 {
+            let z = octant_zone(pos);
+            assert_eq!(z.popcount(), 4, "position {pos} = 2×2 = 4 sub-pixels");
+            assert_eq!(z.0 & total.0, 0, "position {pos} overlaps prior");
+            total = total.union(z);
+        }
+        assert_eq!(total, Bitmap::FULL, "8 octant zones must tile the cell");
+    }
+
+    #[test]
+    fn octant_table_has_230_entries() {
+        assert_eq!(OCTANT_PATTERNS.len(), 230);
+    }
+
+    #[test]
+    fn octant_patterns_match_block_element_exclusions() {
+        // Every byte in OCTANT_PATTERNS must be a pattern that DOESN'T
+        // correspond to an existing block-element bitmap. Spot-check the
+        // 18 forbidden patterns are absent.
+        let forbidden: &[(u8, &str)] = &[
+            (0x00, "empty = SPACE"),
+            (0xFF, "full = FULL BLOCK"),
+            (0x0F, "{1,2,3,4} = UPPER HALF"),
+            (0xF0, "{5,6,7,8} = LOWER HALF"),
+            (0x55, "{1,3,5,7} = LEFT HALF"),
+            (0xAA, "{2,4,6,8} = RIGHT HALF"),
+            (0x05, "{1,3} = UL QUAD"),
+            (0x0A, "{2,4} = UR QUAD"),
+            (0x50, "{5,7} = LL QUAD"),
+            (0xA0, "{6,8} = LR QUAD"),
+            (0xA5, "UL+LR diagonal"),
+            (0x5A, "UR+LL diagonal"),
+            (0xF5, "3-corner missing UR"),
+            (0x5F, "3-corner missing LR"),
+            (0xAF, "3-corner missing LL"),
+            (0xFA, "3-corner missing UL"),
+            (0xC0, "{7,8} = LOWER 1/4"),
+            (0xFC, "{3,4,5,6,7,8} = LOWER 3/4"),
+        ];
+        for &(pat, label) in forbidden {
+            assert!(
+                !OCTANT_PATTERNS.contains(&pat),
+                "octant table must not contain 0x{pat:02X} ({label})"
+            );
+        }
+    }
+
+    #[test]
+    fn octant_codepoint_zero_picks_position_3() {
+        // U+1CD00 is the first octant ("Block Octant-3") — only position
+        // 3 should be lit. Position 3 in Z-order = (col 0, row 1) =
+        // sub-rows 2-3, sub-cols 0-1.
+        let pool = SymbolSet::build(Repertoire::OCTANT | Repertoire::SPACE);
+        let s = lookup(&pool, 0x1CD00);
+        assert_eq!(s.bitmap, Bitmap::from_rect(2, 0, 4, 2));
+        assert_eq!(s.popcount, 4);
+    }
+
+    #[test]
+    fn octant_block_combination_fills_pool() {
+        // BLOCK + OCTANT together should cover all 256 octant patterns
+        // (BLOCK provides the patterns octants skip — the 18 exclusions
+        // plus SPACE plus FULL) MINUS the 5 mystery patterns Unicode
+        // chose not to encode anywhere. So 256 − 5 = 251 unique bitmaps.
+        let pool = SymbolSet::build(Repertoire::SPACE | Repertoire::BLOCK | Repertoire::OCTANT);
+        // 230 octants + 21 block elements (deduped) = 251, matching.
+        assert!(
+            pool.len() >= 248 && pool.len() <= 254,
+            "BLOCK+OCTANT pool size = {}, expected ~251",
+            pool.len()
+        );
+    }
+
+    #[test]
+    fn rich_default_uses_octants_not_braille() {
+        let rich = SymbolSet::build(Repertoire::RICH);
+        // Octant codepoints should be present.
+        assert!(
+            rich.symbols().iter().any(|s| s.codepoint == '\u{1CD00}'),
+            "RICH pool must include octants"
+        );
+        // Braille codepoints should NOT be present (BRAILLE flag not
+        // in RICH; deferred until bitmap model is fixed).
+        assert!(
+            !rich.symbols().iter().any(|s| (s.codepoint as u32) & 0xFFFFFF00 == 0x2800),
+            "RICH pool must not include Braille (deferred)"
+        );
+    }
+
+    // ─── Braille tests (using explicit flag, not RICH default) ─────────
+
     #[test]
     fn braille_dot_zone_popcount() {
-        // Each dot covers a 2×2 zone = 4 sub-pixels.
         for dot in 1..=8u8 {
             assert_eq!(braille_dot_zone(dot).popcount(), 4, "dot {dot}");
         }
@@ -302,11 +494,9 @@ mod tests {
 
     #[test]
     fn braille_dots_partition_the_cell() {
-        // All 8 dots together cover the entire 4×8 grid exactly once.
         let mut total = Bitmap::EMPTY;
         for dot in 1..=8u8 {
             let z = braille_dot_zone(dot);
-            // No overlap with previously-seen dots.
             assert_eq!(z.0 & total.0, 0, "dot {dot} overlaps prior dots");
             total = total.union(z);
         }
@@ -315,36 +505,15 @@ mod tests {
 
     #[test]
     fn braille_codepoints_match_unicode_convention() {
-        // U+2800 = no dots = empty bitmap.
-        // U+2801 = dot 1 only = top-left 2×2 zone.
-        // U+28FF = all 8 dots = full cell.
-        let rich = SymbolSet::build(Repertoire::RICH);
-        // U+2800 (empty Braille) should dedup AWAY in favour of SPACE.
-        assert!(
-            !rich.symbols().iter().any(|s| s.codepoint as u32 == 0x2800),
-            "U+2800 (empty Braille) must dedup to SPACE U+0020"
-        );
-        // U+28FF (all dots) should dedup to FULL BLOCK U+2588.
-        assert!(
-            !rich.symbols().iter().any(|s| s.codepoint as u32 == 0x28FF),
-            "U+28FF (all dots) must dedup to FULL BLOCK U+2588"
-        );
-        // U+2801 (dot 1 only) is a unique pattern — must survive.
-        let s = lookup(&rich, 0x2801);
-        assert_eq!(s.popcount, 4, "single Braille dot = 4 sub-pixels");
-        // Its bitmap is the top-left 2×2 zone.
+        let pool = SymbolSet::build(Repertoire::SPACE | Repertoire::BLOCK | Repertoire::BRAILLE);
+        // U+2800 (empty) dedups to SPACE.
+        assert!(!pool.symbols().iter().any(|s| s.codepoint as u32 == 0x2800));
+        // U+28FF (all dots) dedups to FULL BLOCK.
+        assert!(!pool.symbols().iter().any(|s| s.codepoint as u32 == 0x28FF));
+        // U+2801 (dot 1 only) survives as a unique pattern at this
+        // (current-but-known-wrong) bitmap model. Top-left 2×2 zone.
+        let s = lookup(&pool, 0x2801);
+        assert_eq!(s.popcount, 4);
         assert_eq!(s.bitmap, Bitmap::from_rect(0, 0, 2, 2));
-    }
-
-    #[test]
-    fn rich_pool_size_in_expected_range() {
-        // 23 (block + space, deduped) + 256 (Braille) − (collisions) =
-        // roughly 270–280. Assert a sane band, not an exact count, so the
-        // dedup logic can evolve without churn.
-        let n = SymbolSet::build(Repertoire::RICH).len();
-        assert!(
-            n >= 260 && n <= 280,
-            "RICH pool size = {n}, expected 260..280"
-        );
     }
 }
