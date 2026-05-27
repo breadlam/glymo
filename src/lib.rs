@@ -32,10 +32,12 @@
 
 pub mod bitmap;
 pub mod color;
+pub mod matcher;
 pub mod repertoire;
 pub mod symbol;
 
 pub use bitmap::Bitmap;
 pub use color::{analyze, luminance, Analysis, Patch, Rgb};
+pub use matcher::{match_cell, Match};
 pub use repertoire::{Repertoire, SymbolSet};
 pub use symbol::Symbol;
