@@ -15,3 +15,11 @@ codegen-units = 1
 [dependencies]
 # Intentionally none. The core matcher is dependency-free by design;
 # downstream crates bring their own image/codec/IO surface.
+
+[dev-dependencies]
+# Only the PNG-render example needs this. Library consumers don't link it.
+png = "0.17"
+
+[[example]]
+name = "render_png"
+path = "examples/render_png.rs"
