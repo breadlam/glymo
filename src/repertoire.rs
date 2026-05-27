@@ -4,11 +4,6 @@
 //! include in a pool. [`SymbolSet::build`] materialises the pool,
 //! deduplicating by bitmap (identical bitmaps collapse to the lowest
 //! codepoint) and sorting by codepoint for deterministic iteration.
-//!
-//! Subsequent revisions add `OCTANT` and `BRAILLE` (256-glyph rich
-//! families on a 2×4 binary grid). This revision ships the block
-//! family — universally supported, the right foundation for testing
-//! the type model and the matcher's inner loop.
 
 use crate::bitmap::{Bitmap, WIDTH};
 use crate::symbol::Symbol;
@@ -30,9 +25,18 @@ impl Repertoire {
     /// at 4 sub-pixel columns they would need fractional addressing.
     pub const BLOCK: Repertoire = Repertoire(1 << 1);
 
-    /// Convenience union: every family that ships in this revision.
-    /// Widens as `OCTANT` and `BRAILLE` land.
-    pub const CONSERVATIVE: Repertoire = Repertoire(0b11);
+    /// All 256 Braille patterns (U+2800..U+28FF). Each Braille cell
+    /// holds 8 dots in a 2×4 grid; each dot maps to a 2×2 zone of our
+    /// sub-pixel grid. Decades-old, near-universal font support — the
+    /// safe choice for "rich" pool support before octants are
+    /// universally rendered.
+    pub const BRAILLE: Repertoire = Repertoire(1 << 2);
+
+    /// Block-only — narrow universal-support tier.
+    pub const CONSERVATIVE: Repertoire = Repertoire(0b011);
+
+    /// Block + Braille — broad font support with a ~270-glyph pool.
+    pub const RICH: Repertoire = Repertoire(0b111);
 
     pub const fn contains(self, other: Repertoire) -> bool {
         (self.0 & other.0) == other.0
@@ -96,6 +100,55 @@ fn push_block(v: &mut Vec<Symbol>) {
     v.push(Symbol::new('\u{259F}', q_ur.union(q_ll).union(q_lr)));         // missing UL
 }
 
+/// Braille codepoint convention: `U+2800 + dot_bitfield`, where
+/// bits 0..7 map to dots 1..8. The dot layout within a Braille cell:
+///
+/// ```text
+///   dot 1 | dot 4    ← top row
+///   dot 2 | dot 5
+///   dot 3 | dot 6
+///   dot 7 | dot 8    ← bottom row
+/// ```
+///
+/// Each dot occupies a 2×2 zone in our 4×8 sub-grid (8 zones × 4
+/// sub-pixels each = 32 = TOTAL).
+fn braille_dot_zone(dot: u8) -> Bitmap {
+    // (zone_col, zone_row) — 2 cols of zones, 4 rows of zones.
+    let (zc, zr) = match dot {
+        1 => (0, 0),
+        2 => (0, 1),
+        3 => (0, 2),
+        4 => (1, 0),
+        5 => (1, 1),
+        6 => (1, 2),
+        7 => (0, 3),
+        8 => (1, 3),
+        _ => unreachable!("braille dot must be 1..=8"),
+    };
+    let r0 = zr * 2;
+    let c0 = zc * 2;
+    Bitmap::from_rect(r0, c0, r0 + 2, c0 + 2)
+}
+
+fn push_braille(v: &mut Vec<Symbol>) {
+    // All 256 patterns. The dedup pass collapses any whose bitmaps match
+    // an earlier (lower-codepoint) entry — e.g. the all-empty Braille
+    // pattern (U+2800) collapses to SPACE (U+0020) if SPACE is in the
+    // pool; the all-dots pattern (U+28FF) collapses to FULL BLOCK
+    // (U+2588) if present. Patterns matching block-family bitmaps
+    // (halves, quadrants, eighths) similarly defer to their lower-
+    // codepoint block representative.
+    for pattern in 0u32..256 {
+        let mut bm = Bitmap::EMPTY;
+        for bit in 0..8 {
+            if pattern & (1 << bit) != 0 {
+                bm = bm.union(braille_dot_zone((bit + 1) as u8));
+            }
+        }
+        v.push(Symbol::from_u32(0x2800 + pattern, bm));
+    }
+}
+
 /// A deduplicated, codepoint-sorted pool of glyphs. The matcher iterates
 /// this; encoder-side pool pruning produces a `SymbolSet` covering only
 /// the glyphs a particular content actually uses.
@@ -116,6 +169,9 @@ impl SymbolSet {
         }
         if rep.contains(Repertoire::BLOCK) {
             push_block(&mut all);
+        }
+        if rep.contains(Repertoire::BRAILLE) {
+            push_braille(&mut all);
         }
 
         all.sort_by_key(|s| s.codepoint as u32);
@@ -213,5 +269,82 @@ mod tests {
         let left = lookup(&set, 0x258C).bitmap;
         let right = lookup(&set, 0x2590).bitmap;
         assert_eq!(left.union(right), Bitmap::FULL);
+    }
+
+    // ─── Braille tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn rich_pool_grows_over_conservative() {
+        let conservative = SymbolSet::build(Repertoire::CONSERVATIVE);
+        let rich = SymbolSet::build(Repertoire::RICH);
+        assert!(
+            rich.len() > conservative.len(),
+            "RICH must add glyphs over CONSERVATIVE"
+        );
+        // Every conservative-pool member must still appear in rich (its
+        // codepoint is lower, so it wins dedup).
+        for s in conservative.symbols() {
+            assert!(
+                rich.symbols().iter().any(|t| t.codepoint == s.codepoint),
+                "conservative glyph U+{:04X} dropped from RICH pool",
+                s.codepoint as u32
+            );
+        }
+    }
+
+    #[test]
+    fn braille_dot_zone_popcount() {
+        // Each dot covers a 2×2 zone = 4 sub-pixels.
+        for dot in 1..=8u8 {
+            assert_eq!(braille_dot_zone(dot).popcount(), 4, "dot {dot}");
+        }
+    }
+
+    #[test]
+    fn braille_dots_partition_the_cell() {
+        // All 8 dots together cover the entire 4×8 grid exactly once.
+        let mut total = Bitmap::EMPTY;
+        for dot in 1..=8u8 {
+            let z = braille_dot_zone(dot);
+            // No overlap with previously-seen dots.
+            assert_eq!(z.0 & total.0, 0, "dot {dot} overlaps prior dots");
+            total = total.union(z);
+        }
+        assert_eq!(total, Bitmap::FULL, "8 dots must tile the cell");
+    }
+
+    #[test]
+    fn braille_codepoints_match_unicode_convention() {
+        // U+2800 = no dots = empty bitmap.
+        // U+2801 = dot 1 only = top-left 2×2 zone.
+        // U+28FF = all 8 dots = full cell.
+        let rich = SymbolSet::build(Repertoire::RICH);
+        // U+2800 (empty Braille) should dedup AWAY in favour of SPACE.
+        assert!(
+            !rich.symbols().iter().any(|s| s.codepoint as u32 == 0x2800),
+            "U+2800 (empty Braille) must dedup to SPACE U+0020"
+        );
+        // U+28FF (all dots) should dedup to FULL BLOCK U+2588.
+        assert!(
+            !rich.symbols().iter().any(|s| s.codepoint as u32 == 0x28FF),
+            "U+28FF (all dots) must dedup to FULL BLOCK U+2588"
+        );
+        // U+2801 (dot 1 only) is a unique pattern — must survive.
+        let s = lookup(&rich, 0x2801);
+        assert_eq!(s.popcount, 4, "single Braille dot = 4 sub-pixels");
+        // Its bitmap is the top-left 2×2 zone.
+        assert_eq!(s.bitmap, Bitmap::from_rect(0, 0, 2, 2));
+    }
+
+    #[test]
+    fn rich_pool_size_in_expected_range() {
+        // 23 (block + space, deduped) + 256 (Braille) − (collisions) =
+        // roughly 270–280. Assert a sane band, not an exact count, so the
+        // dedup logic can evolve without churn.
+        let n = SymbolSet::build(Repertoire::RICH).len();
+        assert!(
+            n >= 260 && n <= 280,
+            "RICH pool size = {n}, expected 260..280"
+        );
     }
 }

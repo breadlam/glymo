@@ -76,10 +76,13 @@ fn main() {
 
     eprintln!("source: {src_w}×{src_h} px → grid {cols}×{rows} cells");
 
-    // Pool: the conservative (block-family) repertoire — the only one
-    // built so far. Adding octants / braille widens this later without
-    // changing call shape.
-    let pool = SymbolSet::build(Repertoire::CONSERVATIVE);
+    // Pool: RICH = block family + Braille (~270 glyphs deduped). Set
+    // GLYMO_POOL=block to force the narrower CONSERVATIVE pool for A/B
+    // comparison.
+    let pool = match std::env::var("GLYMO_POOL").as_deref() {
+        Ok("block") => SymbolSet::build(Repertoire::CONSERVATIVE),
+        _ => SymbolSet::build(Repertoire::RICH),
+    };
     eprintln!("pool: {} glyphs", pool.len());
 
     let t0 = std::time::Instant::now();
