@@ -37,6 +37,11 @@ pub mod repertoire;
 pub mod sample;
 pub mod symbol;
 
+/// High-resolution 8×16 / 128-bit matcher. Parallel to the top-level
+/// (4×8 / 32-bit) API; see [`symbol_mode`] module docs for when to use
+/// which.
+pub mod symbol_mode;
+
 pub use bitmap::Bitmap;
 pub use color::{analyze, luminance, Analysis, Patch, Rgb};
 pub use matcher::{match_cell, Match};
