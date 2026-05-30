@@ -17,9 +17,17 @@ codegen-units = 1
 # downstream crates bring their own image/codec/IO surface.
 
 [dev-dependencies]
-# Only the PNG-render example needs this. Library consumers don't link it.
+# Used only by examples and the offline pool generator. Library
+# consumers don't link these — the runtime crate stays dependency-free.
 png = "0.17"
+fontdue = "0.9"
+unicode-width = "0.2"
+unicode_categories = "0.1"
 
 [[example]]
 name = "render_png"
 path = "examples/render_png.rs"
+
+[[example]]
+name = "gen_symbol_pool"
+path = "examples/gen_symbol_pool.rs"
